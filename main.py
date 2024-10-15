@@ -1,101 +1,65 @@
 import random
-import os
-import sys
-import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.utils.data
 import numpy as np
-from torchvision import datasets
-from torchvision import transforms
 from model import CNNModel
 from test import test
+from data_loader import get_data_loaders
 
-# Updated for EMNIST dataset
-dataset_name = 'EMNIST_letters'
-source_image_root = os.path.join('dataset', dataset_name)
+# Configurations
 model_root = 'models'
-cuda = True
-cudnn.benchmark = True
+cuda = torch.cuda.is_available()
 lr = 1e-3
-batch_size = 128
-image_size = 28
-n_epoch = 100
+batch_size = 32
+image_size = 128
+n_epoch = 20
 
+# Set random seed
 manual_seed = random.randint(1, 10000)
 random.seed(manual_seed)
 torch.manual_seed(manual_seed)
 
-# load data
-img_transform_source = transforms.Compose([
-    transforms.Resize(image_size),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=(0.1307,), std=(0.3081,))
-])
+# Load datasets
+print("Preparing data loaders...")
+source_loader, target_loader = get_data_loaders(batch_size, image_size)
 
-# Load EMNIST Letters dataset
-dataset_source = datasets.EMNIST(
-    root='dataset',
-    split='letters',  # Use 'letters' subset of EMNIST
-    train=True,
-    transform=img_transform_source,
-    download=True
-)
-
-dataloader_source = torch.utils.data.DataLoader(
-    dataset=dataset_source,
-    batch_size=batch_size,
-    shuffle=True,
-    num_workers=8
-)
-
-# load model
+# Initialize model, optimizer, and loss function
 my_net = CNNModel()
-
-# setup optimizer
 optimizer = optim.Adam(my_net.parameters(), lr=lr)
-
-loss_class = torch.nn.NLLLoss()
+loss_class = torch.nn.CrossEntropyLoss()
 
 if cuda:
     my_net = my_net.cuda()
     loss_class = loss_class.cuda()
 
-for p in my_net.parameters():
-    p.requires_grad = True
-
-# training
-best_accu = 0.0
+# Training loop
+print("Starting training...")
 for epoch in range(n_epoch):
+    my_net.train()
+    len_loader = min(len(source_loader), len(target_loader))
+    source_iter = iter(source_loader)
+    target_iter = iter(target_loader)
 
-    len_dataloader = len(dataloader_source)
-    data_source_iter = iter(dataloader_source)
+    for i in range(len_loader):
+        p = float(i + epoch * len_loader) / (n_epoch * len_loader)
+        alpha = 2. / (1. + np.exp(-10 * p)) - 1
 
-    for i in range(len_dataloader):
-        my_net.zero_grad()
-        data_source = next(data_source_iter)
-        s_img, s_label = data_source
-
+        source_images, source_labels = next(source_iter)
         if cuda:
-            s_img = s_img.cuda()
-            s_label = s_label.cuda()
+            source_images, source_labels = source_images.cuda(), source_labels.cuda()
 
-        class_output, _ = my_net(input_data=s_img, alpha=0)
-        err_s_label = loss_class(class_output, s_label)
-        
-        err_s_label.backward()
+        optimizer.zero_grad()
+        class_output, _ = my_net(source_images, alpha=alpha)
+        loss = loss_class(class_output, source_labels)
+        loss.backward()
         optimizer.step()
 
-        sys.stdout.write('\r epoch: %d, [iter: %d / all %d], err_s_label: %f' \
-              % (epoch, i + 1, len_dataloader, err_s_label.data.cpu().numpy()))
-        sys.stdout.flush()
+        if (i + 1) % 10 == 0:
+            print(f'Epoch [{epoch + 1}/{n_epoch}], Step [{i + 1}/{len_loader}], Loss: {loss.item():.4f}')
 
-    print('\n')
-    accu = test('EMNIST_letters')
-    print('Accuracy of the EMNIST Letters dataset: %f' % accu)
-    if accu > best_accu:
-        best_accu = accu
-        torch.save(my_net, '{0}/emnist_model_epoch_best.pth'.format(model_root))
+    torch.save(my_net.state_dict(), f'{model_root}/adaptiope_epoch_{epoch + 1}.pth')
 
-print('============ Summary ============= \n')
-print('Best Accuracy of the EMNIST Letters dataset: %f' % best_accu)
-print('Corresponding model was saved in ' + model_root + '/emnist_model_epoch_best.pth')
+# Test model
+print("Evaluating the model...")
+test_accuracy = test(my_net, target_loader, cuda)
+print(f'Test Accuracy: {test_accuracy:.2f}%')

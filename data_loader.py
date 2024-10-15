@@ -1,35 +1,40 @@
-import torch.utils.data as data
-from PIL import Image
 import os
+import requests
+import zipfile
+import torch.utils.data as data
+from torchvision import datasets, transforms
 
+DATASET_URL = 'https://drive.usercontent.google.com/download?id=1FmdsvetC0oVyrFJ9ER7fcN-cXPOWx2gq&export=download'
+DATASET_ZIP = 'adaptiope.zip'
+DATASET_DIR = 'adaptiope/Adaptiope'
 
-class GetLoader(data.Dataset):
-    def __init__(self, data_root, data_list, transform=None):
-        self.root = data_root
-        self.transform = transform
+def download_and_extract():
+    if not os.path.exists(DATASET_DIR):
+        print("Downloading the Adaptiope dataset...")
+        response = requests.get(DATASET_URL, stream=True)
+        with open(DATASET_ZIP, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print("Download complete! Extracting...")
+        with zipfile.ZipFile(DATASET_ZIP, 'r') as zip_ref:
+            zip_ref.extractall('adaptiope')
+        print("Dataset extracted successfully!")
+    else:
+        print("Dataset already exists. Skipping download.")
 
-        f = open(data_list, 'r')
-        data_list = f.readlines()
-        f.close()
+def get_data_loaders(batch_size=32, image_size=128):
+    download_and_extract()
 
-        self.n_data = len(data_list)
+    img_transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
 
-        self.img_paths = []
-        self.img_labels = []
+    source_dataset = datasets.ImageFolder(root=f'{DATASET_DIR}/synthetic', transform=img_transform)
+    target_dataset = datasets.ImageFolder(root=f'{DATASET_DIR}/product_images', transform=img_transform)
 
-        for data in data_list:
-            self.img_paths.append(data.split()[0])
-            self.img_labels.append(data.split()[1])
+    source_loader = data.DataLoader(source_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+    target_loader = data.DataLoader(target_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
 
-    def __getitem__(self, item):
-        img_paths, labels = self.img_paths[item], self.img_labels[item]
-        imgs = Image.open(os.path.join(self.root, img_paths)).convert('RGB')
-
-        if self.transform is not None:
-            imgs = self.transform(imgs)
-            labels = int(labels)
-
-        return imgs, labels
-
-    def __len__(self):
-        return self.n_data
+    return source_loader, target_loader
